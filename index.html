@@ -1,0 +1,734 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title></title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #050505;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 40px 20px;
+            font-family: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+        }
+
+        .wrapper {
+            width: 100%;
+            max-width: 1280px;
+        }
+
+        .code-board {
+            background: #0a0a0a;
+            border: 1px solid #1f1f1f;
+            border-radius: 12px;
+            box-shadow: 
+                0 0 0 1px rgba(255,255,255,0.03),
+                0 25px 50px -12px rgba(0,0,0,0.8),
+                0 0 80px rgba(0,0,0,0.6);
+            overflow: hidden;
+        }
+
+        .code-header {
+            background: #111;
+            border-bottom: 1px solid #1f1f1f;
+            padding: 12px 20px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+        }
+
+        .dot.red { background: #ff5f56; }
+        .dot.yellow { background: #ffbd2e; }
+        .dot.green { background: #27c93f; }
+
+        .code-body {
+            padding: 24px 28px 28px;
+            max-height: 82vh;
+            overflow-y: auto;
+            overflow-x: auto;
+        }
+
+        /* Custom scrollbar */
+        .code-body::-webkit-scrollbar {
+            width: 10px;
+            height: 10px;
+        }
+        .code-body::-webkit-scrollbar-track {
+            background: #0a0a0a;
+        }
+        .code-body::-webkit-scrollbar-thumb {
+            background: #2a2a2a;
+            border-radius: 5px;
+        }
+        .code-body::-webkit-scrollbar-thumb:hover {
+            background: #3a3a3a;
+        }
+
+        .code-line {
+            font-size: 13.5px;
+            line-height: 1.7;
+            white-space: pre;
+            margin-bottom: 2px;
+            letter-spacing: 0.2px;
+        }
+
+        .line-num {
+            color: #3f3f46;
+            user-select: none;
+            display: inline-block;
+            width: 42px;
+            text-align: right;
+            margin-right: 18px;
+        }
+
+        .c-purple { color: #c084fc; }
+        .c-green  { color: #4ade80; }
+        .c-white  { color: #e4e4e7; }
+        .c-red    { color: #f87171; }
+    </style>
+</head>
+<body>
+    <div class="wrapper">
+        <div class="code-board">
+            <div class="code-header">
+                <div class="dot red"></div>
+                <div class="dot yellow"></div>
+                <div class="dot green"></div>
+            </div>
+            <div class="code-body" id="codeBoard"></div>
+        </div>
+    </div>
+
+    <script>
+        const colors = ["c-purple", "c-green", "c-white", "c-red"];
+
+        function colorize(line) {
+            const parts = line.split(/(\s+|[{}()\[\];,.=<>!&|?:])/).filter(p => p.length > 0);
+            const shuffled = [...colors].sort(() => Math.random() - 0.5).slice(0, 3);
+            let html = "";
+            let colorIndex = 0;
+
+            parts.forEach((part, i) => {
+                const cls = shuffled[colorIndex % 3];
+                html += `<span class="${cls}">${part}</span>`;
+                if (i % 3 === 2) colorIndex++;
+            });
+            return html;
+        }
+
+        // 200 dòng code rất dài, phong cách chuyên gia
+        const rawLines = [
+            `async function bootstrapDistributedSystem(config = { region: "ap-southeast-1", replicationFactor: 3, consistencyLevel: "quorum", maxConnections: 2048, idleTimeout: 60000 }) {`,
+            `    const discoveryService = await ServiceDiscovery.connect(config.seedNodes || ["10.0.0.11:8500", "10.0.0.12:8500", "10.0.0.13:8500"], { healthCheckInterval: 5000, deregisterCriticalAfter: "30s" });`,
+            `    const consistentHashRing = new ConsistentHashRing(await discoveryService.getHealthyNodes(), { virtualNodesPerNode: 256, hashFunction: "xxhash64", replicationFactor: config.replicationFactor });`,
+            `    const connectionPool = new ConnectionPool({ maxSize: config.maxConnections, acquireTimeout: 3000, idleTimeout: config.idleTimeout, evictionPolicy: "lru", validationQuery: "SELECT 1" });`,
+            `    return new DistributedCoordinator({ hashRing: consistentHashRing, pool: connectionPool, consistency: config.consistencyLevel, metrics: new PrometheusMetricsExporter({ port: 9090 }) });`,
+            `}`,
+            ``,
+            `class TwoPhaseCommitCoordinator {`,
+            `    constructor(participants = [], options = { timeoutMs: 15000, retryPolicy: { maxAttempts: 3, backoffMultiplier: 2, initialDelay: 200 } }) {`,
+            `        this.participants = new Map(participants.map(p => [p.nodeId, Object.freeze({ ...p, status: "UNKNOWN" })]));`,
+            `        this.timeoutMs = options.timeoutMs; this.retryPolicy = options.retryPolicy; this.transactionLog = new AppendOnlyLog({ path: "/var/log/tx.log", fsync: true });`,
+            `    }`,
+            ``,
+            `    async execute(transactionId, operations) {`,
+            `        const prepareResults = await Promise.allSettled([...this.participants.values()].map(async (participant) => {`,
+            `            return retryWithExponentialBackoff(() => participant.prepare(transactionId, operations), this.retryPolicy);`,
+            `        }));`,
+            `        const allPrepared = prepareResults.every(r => r.status === "fulfilled" && r.value === "PREPARED");`,
+            `        if (allPrepared) {`,
+            `            await this.transactionLog.append({ type: "COMMIT", transactionId, timestamp: Date.now() });`,
+            `            await Promise.all([...this.participants.values()].map(p => p.commit(transactionId)));`,
+            `            return { status: "COMMITTED", transactionId, participants: this.participants.size };`,
+            `        }`,
+            `        await this.transactionLog.append({ type: "ABORT", transactionId, timestamp: Date.now() });`,
+            `        await Promise.allSettled([...this.participants.values()].map(p => p.abort(transactionId)));`,
+            `        return { status: "ABORTED", transactionId, reason: "prepare_phase_failed" };`,
+            `    }`,
+            `}`,
+            ``,
+            `const createReactivePipeline = (...operators) => (source) => operators.reduce((stream, operator) => operator(stream), source);`,
+            `const map = (fn) => (stream) => createObservable(observer => stream.subscribe({ next: v => observer.next(fn(v)), error: e => observer.error(e), complete: () => observer.complete() }));`,
+            `const filter = (predicate) => (stream) => createObservable(observer => stream.subscribe({ next: v => predicate(v) && observer.next(v), error: e => observer.error(e), complete: () => observer.complete() }));`,
+            `const flatMap = (fn) => (stream) => createObservable(observer => stream.subscribe({ next: v => fn(v).subscribe(observer), error: e => observer.error(e), complete: () => observer.complete() }));`,
+            ``,
+            `class LockFreeMPMCQueue {`,
+            `    constructor(capacity = 1024) {`,
+            `        this.capacity = capacity; this.buffer = new Array(capacity); this.head = new AtomicLong(0); this.tail = new AtomicLong(0);`,
+            `        for (let i = 0; i < capacity; i++) this.buffer[i] = { sequence: new AtomicLong(i), data: null };`,
+            `    }`,
+            `    enqueue(item) {`,
+            `        let tail, cell;`,
+            `        do {`,
+            `            tail = this.tail.get(); cell = this.buffer[tail % this.capacity];`,
+            `            const seq = cell.sequence.get(); const dif = seq - tail;`,
+            `            if (dif === 0) { if (this.tail.compareAndSet(tail, tail + 1)) break; }`,
+            `            else if (dif < 0) return false;`,
+            `        } while (true);`,
+            `        cell.data = item; cell.sequence.set(tail + 1); return true;`,
+            `    }`,
+            `    dequeue() {`,
+            `        let head, cell;`,
+            `        do {`,
+            `            head = this.head.get(); cell = this.buffer[head % this.capacity];`,
+            `            const seq = cell.sequence.get(); const dif = seq - (head + 1);`,
+            `            if (dif === 0) { if (this.head.compareAndSet(head, head + 1)) break; }`,
+            `            else if (dif < 0) return null;`,
+            `        } while (true);`,
+            `        const data = cell.data; cell.data = null; cell.sequence.set(head + this.capacity); return data;`,
+            `    }`,
+            `}`,
+            ``,
+            `async function parallelMapWithConcurrency(items, mapper, { concurrency = 16, onProgress = null } = {}) {`,
+            `    const results = new Array(items.length); let nextIndex = 0; let completed = 0;`,
+            `    const worker = async () => {`,
+            `        while (true) {`,
+            `            const current = nextIndex++; if (current >= items.length) break;`,
+            `            results[current] = await mapper(items[current], current);`,
+            `            completed++; if (onProgress) onProgress(completed, items.length);`,
+            `        }`,
+            `    };`,
+            `    await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, () => worker()));`,
+            `    return results;`,
+            `}`,
+            ``,
+            `class AdaptiveLRUCache {`,
+            `    constructor({ maxSize = 10000, maxAgeMs = 300000, onEvict = null } = {}) {`,
+            `        this.maxSize = maxSize; this.maxAgeMs = maxAgeMs; this.onEvict = onEvict;`,
+            `        this.cache = new Map(); this.accessOrder = new Map(); this.timers = new Map();`,
+            `    }`,
+            `    get(key) {`,
+            `        if (!this.cache.has(key)) return undefined;`,
+            `        const entry = this.cache.get(key);`,
+            `        if (Date.now() - entry.createdAt > this.maxAgeMs) { this.delete(key); return undefined; }`,
+            `        this.accessOrder.delete(key); this.accessOrder.set(key, Date.now());`,
+            `        return entry.value;`,
+            `    }`,
+            `    set(key, value) {`,
+            `        if (this.cache.has(key)) this.delete(key);`,
+            `        if (this.cache.size >= this.maxSize) {`,
+            `            const oldestKey = this.accessOrder.keys().next().value;`,
+            `            this.delete(oldestKey);`,
+            `        }`,
+            `        this.cache.set(key, { value, createdAt: Date.now() });`,
+            `        this.accessOrder.set(key, Date.now());`,
+            `        const timer = setTimeout(() => this.delete(key), this.maxAgeMs);`,
+            `        this.timers.set(key, timer);`,
+            `    }`,
+            `    delete(key) {`,
+            `        if (!this.cache.has(key)) return false;`,
+            `        const entry = this.cache.get(key);`,
+            `        this.cache.delete(key); this.accessOrder.delete(key);`,
+            `        clearTimeout(this.timers.get(key)); this.timers.delete(key);`,
+            `        if (this.onEvict) this.onEvict(key, entry.value);`,
+            `        return true;`,
+            `    }`,
+            `}`,
+            ``,
+            `async function retryWithJitter(fn, { maxAttempts = 5, baseDelayMs = 100, maxDelayMs = 10000, jitterFactor = 0.2 } = {}) {`,
+            `    let attempt = 0; let lastError;`,
+            `    while (attempt < maxAttempts) {`,
+            `        try { return await fn(attempt); } catch (err) {`,
+            `            lastError = err; attempt++;`,
+            `            if (attempt >= maxAttempts) break;`,
+            `            const exponentialDelay = Math.min(baseDelayMs * Math.pow(2, attempt), maxDelayMs);`,
+            `            const jitter = exponentialDelay * jitterFactor * (Math.random() * 2 - 1);`,
+            `            await new Promise(r => setTimeout(r, Math.max(0, exponentialDelay + jitter)));`,
+            `        }`,
+            `    }`,
+            `    throw lastError;`,
+            `}`,
+            ``,
+            `class CircuitBreaker {`,
+            `    constructor({ failureThreshold = 5, successThreshold = 3, timeoutMs = 30000, monitoringPeriodMs = 60000 } = {}) {`,
+            `        this.failureThreshold = failureThreshold; this.successThreshold = successThreshold; this.timeoutMs = timeoutMs;`,
+            `        this.state = "CLOSED"; this.failureCount = 0; this.successCount = 0; this.nextAttempt = 0;`,
+            `    }`,
+            `    async execute(fn) {`,
+            `        if (this.state === "OPEN") {`,
+            `            if (Date.now() < this.nextAttempt) throw new Error("CircuitBreaker is OPEN");`,
+            `            this.state = "HALF_OPEN";`,
+            `        }`,
+            `        try {`,
+            `            const result = await fn();`,
+            `            this.onSuccess(); return result;`,
+            `        } catch (err) {`,
+            `            this.onFailure(); throw err;`,
+            `        }`,
+            `    }`,
+            `    onSuccess() {`,
+            `        this.failureCount = 0;`,
+            `        if (this.state === "HALF_OPEN") {`,
+            `            this.successCount++;`,
+            `            if (this.successCount >= this.successThreshold) { this.state = "CLOSED"; this.successCount = 0; }`,
+            `        }`,
+            `    }`,
+            `    onFailure() {`,
+            `        this.failureCount++; this.successCount = 0;`,
+            `        if (this.failureCount >= this.failureThreshold) { this.state = "OPEN"; this.nextAttempt = Date.now() + this.timeoutMs; }`,
+            `    }`,
+            `}`,
+            ``,
+            `const createWorkerPool = (scriptURL, poolSize = navigator.hardwareConcurrency || 4) => {`,
+            `    const workers = Array.from({ length: poolSize }, () => new Worker(scriptURL));`,
+            `    const queue = []; let active = 0; let cursor = 0;`,
+            `    const processQueue = () => {`,
+            `        while (queue.length > 0 && active < poolSize) {`,
+            `            const { data, resolve, reject } = queue.shift();`,
+            `            const worker = workers[cursor++ % poolSize]; active++;`,
+            `            const onMessage = (e) => { worker.removeEventListener("message", onMessage); worker.removeEventListener("error", onError); active--; resolve(e.data); processQueue(); };`,
+            `            const onError = (e) => { worker.removeEventListener("message", onMessage); worker.removeEventListener("error", onError); active--; reject(e); processQueue(); };`,
+            `            worker.addEventListener("message", onMessage); worker.addEventListener("error", onError); worker.postMessage(data);`,
+            `        }`,
+            `    };`,
+            `    return { run: (data) => new Promise((resolve, reject) => { queue.push({ data, resolve, reject }); processQueue(); }) };`,
+            `};`,
+            ``,
+            `class PriorityQueue {`,
+            `    constructor(comparator = (a, b) => a.priority - b.priority) { this.heap = []; this.compare = comparator; }`,
+            `    push(item) { this.heap.push(item); this._siftUp(this.heap.length - 1); }`,
+            `    pop() { if (this.heap.length === 0) return undefined; const top = this.heap[0]; const last = this.heap.pop(); if (this.heap.length > 0) { this.heap[0] = last; this._siftDown(0); } return top; }`,
+            `    _siftUp(i) { while (i > 0) { const p = (i - 1) >> 1; if (this.compare(this.heap[i], this.heap[p]) >= 0) break; [this.heap[i], this.heap[p]] = [this.heap[p], this.heap[i]]; i = p; } }`,
+            `    _siftDown(i) { const n = this.heap.length; while (true) { let l = i * 2 + 1, r = l + 1, s = i; if (l < n && this.compare(this.heap[l], this.heap[s]) < 0) s = l; if (r < n && this.compare(this.heap[r], this.heap[s]) < 0) s = r; if (s === i) break; [this.heap[i], this.heap[s]] = [this.heap[s], this.heap[i]]; i = s; } }`,
+            `    get size() { return this.heap.length; }`,
+            `}`,
+            ``,
+            `async function* asyncBatch(iterable, batchSize = 100) {`,
+            `    let batch = [];`,
+            `    for await (const item of iterable) {`,
+            `        batch.push(item);`,
+            `        if (batch.length >= batchSize) { yield batch; batch = []; }`,
+            `    }`,
+            `    if (batch.length > 0) yield batch;`,
+            `}`,
+            ``,
+            `class RateLimiterTokenBucket {`,
+            `    constructor({ capacity = 100, refillRate = 10, refillIntervalMs = 1000 } = {}) {`,
+            `        this.capacity = capacity; this.tokens = capacity; this.refillRate = refillRate; this.refillIntervalMs = refillIntervalMs; this.lastRefill = Date.now();`,
+            `    }`,
+            `    async acquire(tokens = 1) {`,
+            `        this._refill();`,
+            `        if (this.tokens >= tokens) { this.tokens -= tokens; return true; }`,
+            `        const waitMs = Math.ceil((tokens - this.tokens) * this.refillIntervalMs / this.refillRate);`,
+            `        await new Promise(r => setTimeout(r, waitMs));`,
+            `        return this.acquire(tokens);`,
+            `    }`,
+            `    _refill() {`,
+            `        const now = Date.now(); const elapsed = now - this.lastRefill;`,
+            `        const newTokens = (elapsed / this.refillIntervalMs) * this.refillRate;`,
+            `        this.tokens = Math.min(this.capacity, this.tokens + newTokens); this.lastRefill = now;`,
+            `    }`,
+            `}`,
+            ``,
+            `const createMiddlewareStack = (...middlewares) => {`,
+            `    return async (context) => {`,
+            `        let index = -1;`,
+            `        const dispatch = async (i) => {`,
+            `            if (i <= index) throw new Error("next() called multiple times");`,
+            `            index = i; const fn = middlewares[i];`,
+            `            if (!fn) return;`,
+            `            return fn(context, () => dispatch(i + 1));`,
+            `        };`,
+            `        return dispatch(0);`,
+            `    };`,
+            `};`,
+            ``,
+            `class TrieNode { constructor() { this.children = new Map(); this.isEndOfWord = false; this.metadata = null; } }`,
+            `class Trie {`,
+            `    constructor() { this.root = new TrieNode(); }`,
+            `    insert(word, metadata = null) { let node = this.root; for (const char of word) { if (!node.children.has(char)) node.children.set(char, new TrieNode()); node = node.children.get(char); } node.isEndOfWord = true; node.metadata = metadata; }`,
+            `    search(word) { let node = this.root; for (const char of word) { if (!node.children.has(char)) return null; node = node.children.get(char); } return node.isEndOfWord ? node.metadata : null; }`,
+            `    startsWith(prefix) { let node = this.root; for (const char of prefix) { if (!node.children.has(char)) return false; node = node.children.get(char); } return true; }`,
+            `    autocomplete(prefix, limit = 10) { let node = this.root; for (const char of prefix) { if (!node.children.has(char)) return []; node = node.children.get(char); } const results = []; const dfs = (n, path) => { if (results.length >= limit) return; if (n.isEndOfWord) results.push(path); for (const [c, child] of n.children) dfs(child, path + c); }; dfs(node, prefix); return results; }`,
+            `}`,
+            ``,
+            `function topologicalSort(graph) {`,
+            `    const visited = new Set(); const result = []; const temp = new Set();`,
+            `    const visit = (node) => {`,
+            `        if (temp.has(node)) throw new Error("Cycle detected involving node: " + node);`,
+            `        if (visited.has(node)) return;`,
+            `        temp.add(node); (graph[node] || []).forEach(visit); temp.delete(node); visited.add(node); result.push(node);`,
+            `    };`,
+            `    Object.keys(graph).forEach(visit); return result.reverse();`,
+            `}`,
+            ``,
+            `class BloomFilter {`,
+            `    constructor(expectedItems = 100000, falsePositiveRate = 0.01) {`,
+            `        this.size = Math.ceil(-expectedItems * Math.log(falsePositiveRate) / (Math.log(2) ** 2));`,
+            `        this.hashCount = Math.ceil(this.size / expectedItems * Math.log(2));`,
+            `        this.bits = new Uint8Array(Math.ceil(this.size / 8));`,
+            `    }`,
+            `    add(item) { for (let i = 0; i < this.hashCount; i++) { const h = this._hash(item, i) % this.size; this.bits[h >> 3] |= 1 << (h & 7); } }`,
+            `    mightContain(item) { for (let i = 0; i < this.hashCount; i++) { const h = this._hash(item, i) % this.size; if (!(this.bits[h >> 3] & (1 << (h & 7)))) return false; } return true; }`,
+            `    _hash(str, seed) { let h = seed | 0; for (let i = 0; i < str.length; i++) { h = Math.imul(h ^ str.charCodeAt(i), 0x5bd1e995); h ^= h >>> 13; } return h >>> 0; }`,
+            `}`,
+            ``,
+            `const createAsyncQueue = (concurrency = 1) => {`,
+            `    const queue = []; let running = 0;`,
+            `    const runNext = () => {`,
+            `        while (running < concurrency && queue.length > 0) {`,
+            `            const { fn, resolve, reject } = queue.shift(); running++;`,
+            `            Promise.resolve().then(fn).then(resolve, reject).finally(() => { running--; runNext(); });`,
+            `        }`,
+            `    };`,
+            `    return (fn) => new Promise((resolve, reject) => { queue.push({ fn, resolve, reject }); runNext(); });`,
+            `};`,
+            ``,
+            `class Semaphore {`,
+            `    constructor(permits) { this.permits = permits; this.waiting = []; }`,
+            `    async acquire() { if (this.permits > 0) { this.permits--; return; } await new Promise(r => this.waiting.push(r)); }`,
+            `    release() { this.permits++; if (this.waiting.length > 0 && this.permits > 0) { this.permits--; this.waiting.shift()(); } }`,
+            `}`,
+            ``,
+            `function createMemoizedFunction(fn, { maxSize = 1000, keyResolver = (...args) => JSON.stringify(args) } = {}) {`,
+            `    const cache = new Map();`,
+            `    return function (...args) {`,
+            `        const key = keyResolver(...args);`,
+            `        if (cache.has(key)) { const value = cache.get(key); cache.delete(key); cache.set(key, value); return value; }`,
+            `        const result = fn.apply(this, args);`,
+            `        if (cache.size >= maxSize) cache.delete(cache.keys().next().value);`,
+            `        cache.set(key, result); return result;`,
+            `    };`,
+            `}`,
+            ``,
+            `class EventBus {`,
+            `    constructor() { this.listeners = new Map(); this.onceListeners = new Map(); }`,
+            `    on(event, handler) { if (!this.listeners.has(event)) this.listeners.set(event, new Set()); this.listeners.get(event).add(handler); return () => this.off(event, handler); }`,
+            `    once(event, handler) { if (!this.onceListeners.has(event)) this.onceListeners.set(event, new Set()); this.onceListeners.get(event).add(handler); }`,
+            `    off(event, handler) { this.listeners.get(event)?.delete(handler); this.onceListeners.get(event)?.delete(handler); }`,
+            `    emit(event, payload) { this.listeners.get(event)?.forEach(h => h(payload)); const once = this.onceListeners.get(event); if (once) { once.forEach(h => h(payload)); this.onceListeners.delete(event); } }`,
+            `}`,
+            ``,
+            `async function mapLimit(iterable, limit, iteratorFn) {`,
+            `    const results = []; const executing = new Set();`,
+            `    for await (const [index, item] of enumerate(iterable)) {`,
+            `        const p = Promise.resolve().then(() => iteratorFn(item, index)).then(r => { executing.delete(p); return r; });`,
+            `        results.push(p); executing.add(p);`,
+            `        if (executing.size >= limit) await Promise.race(executing);`,
+            `    }`,
+            `    return Promise.all(results);`,
+            `}`,
+            ``,
+            `async function* enumerate(iterable) { let i = 0; for await (const item of iterable) yield [i++, item]; }`,
+            ``,
+            `class CircularBuffer {`,
+            `    constructor(capacity) { this.buffer = new Array(capacity); this.capacity = capacity; this.head = 0; this.tail = 0; this.length = 0; }`,
+            `    push(item) { this.buffer[this.tail] = item; this.tail = (this.tail + 1) % this.capacity; if (this.length === this.capacity) this.head = (this.head + 1) % this.capacity; else this.length++; }`,
+            `    pop() { if (this.length === 0) return undefined; const item = this.buffer[this.head]; this.head = (this.head + 1) % this.capacity; this.length--; return item; }`,
+            `    toArray() { const result = []; for (let i = 0; i < this.length; i++) result.push(this.buffer[(this.head + i) % this.capacity]); return result; }`,
+            `}`,
+            ``,
+            `const createDeferredPromise = () => { let resolve, reject; const promise = new Promise((res, rej) => { resolve = res; reject = rej; }); return { promise, resolve, reject }; };`,
+            ``,
+            `function createStateMachine({ initial, states }) {`,
+            `    let current = initial;`,
+            `    return {`,
+            `        get state() { return current; },`,
+            `        can(event) { return !!states[current]?.on?.[event]; },`,
+            `        send(event, payload) {`,
+            `            const transition = states[current]?.on?.[event];`,
+            `            if (!transition) return false;`,
+            `            const target = typeof transition === "string" ? transition : transition.target;`,
+            `            const actions = typeof transition === "object" ? transition.actions || [] : [];`,
+            `            current = target; actions.forEach(action => action(payload)); return true;`,
+            `        }`,
+            `    };`,
+            `}`,
+            ``,
+            `class LinkedList {`,
+            `    constructor() { this.head = null; this.tail = null; this.size = 0; }`,
+            `    append(value) { const node = { value, next: null, prev: this.tail }; if (!this.head) this.head = this.tail = node; else { this.tail.next = node; this.tail = node; } this.size++; }`,
+            `    prepend(value) { const node = { value, next: this.head, prev: null }; if (!this.tail) this.head = this.tail = node; else { this.head.prev = node; this.head = node; } this.size++; }`,
+            `    remove(node) { if (node.prev) node.prev.next = node.next; else this.head = node.next; if (node.next) node.next.prev = node.prev; else this.tail = node.prev; this.size--; }`,
+            `    *[Symbol.iterator]() { let current = this.head; while (current) { yield current.value; current = current.next; } }`,
+            `}`,
+            ``,
+            `const deepFreeze = (object) => {`,
+            `    const propNames = Reflect.ownKeys(object);`,
+            `    for (const name of propNames) { const value = object[name]; if (value && typeof value === "object" && !Object.isFrozen(value)) deepFreeze(value); }`,
+            `    return Object.freeze(object);`,
+            `};`,
+            ``,
+            `function createImmutableMap(entries = []) {`,
+            `    const data = new Map(entries);`,
+            `    return {`,
+            `        get: (key) => data.get(key),`,
+            `        has: (key) => data.has(key),`,
+            `        set: (key, value) => createImmutableMap([...data, [key, value]]),`,
+            `        delete: (key) => createImmutableMap([...data].filter(([k]) => k !== key)),`,
+            `        entries: () => data.entries(),`,
+            `        get size() { return data.size; }`,
+            `    };`,
+            `}`,
+            ``,
+            `class TimeoutError extends Error { constructor(message = "Operation timed out") { super(message); this.name = "TimeoutError"; } }`,
+            `const withTimeout = (promise, ms, message) => {`,
+            `    let timer;`,
+            `    return Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new TimeoutError(message)), ms); })]).finally(() => clearTimeout(timer));`,
+            `};`,
+            ``,
+            `async function settleAllSettled(promises) {`,
+            `    return Promise.all(promises.map(p => Promise.resolve(p).then(value => ({ status: "fulfilled", value }), reason => ({ status: "rejected", reason }))));`,
+            `}`,
+            ``,
+            `class Mutex {`,
+            `    constructor() { this._locked = false; this._queue = []; }`,
+            `    async acquire() { if (!this._locked) { this._locked = true; return; } await new Promise(resolve => this._queue.push(resolve)); this._locked = true; }`,
+            `    release() { this._locked = false; const next = this._queue.shift(); if (next) next(); }`,
+            `}`,
+            ``,
+            `const withMutex = (mutex) => (fn) => async (...args) => { await mutex.acquire(); try { return await fn(...args); } finally { mutex.release(); } };`,
+            ``,
+            `function createLazyInitializer(factory) {`,
+            `    let instance; let initialized = false;`,
+            `    return () => { if (!initialized) { instance = factory(); initialized = true; } return instance; };`,
+            `}`,
+            ``,
+            `class Result {`,
+            `    static ok(value) { return new Result(true, value, null); }`,
+            `    static err(error) { return new Result(false, null, error); }`,
+            `    constructor(isOk, value, error) { this.isOk = isOk; this.value = value; this.error = error; }`,
+            `    map(fn) { return this.isOk ? Result.ok(fn(this.value)) : this; }`,
+            `    mapErr(fn) { return this.isOk ? this : Result.err(fn(this.error)); }`,
+            `    andThen(fn) { return this.isOk ? fn(this.value) : this; }`,
+            `    unwrap() { if (this.isOk) return this.value; throw this.error; }`,
+            `    unwrapOr(defaultValue) { return this.isOk ? this.value : defaultValue; }`,
+            `}`,
+            ``,
+            `const tryCatch = (fn) => { try { return Result.ok(fn()); } catch (e) { return Result.err(e); } };`,
+            `const tryCatchAsync = async (fn) => { try { return Result.ok(await fn()); } catch (e) { return Result.err(e); } };`,
+            ``,
+            `function createPipeline(...fns) { return (input) => fns.reduce((value, fn) => fn(value), input); }`,
+            `function createAsyncPipeline(...fns) { return (input) => fns.reduce((promise, fn) => promise.then(fn), Promise.resolve(input)); }`,
+            ``,
+            `class Graph {`,
+            `    constructor() { this.adjacency = new Map(); }`,
+            `    addVertex(v) { if (!this.adjacency.has(v)) this.adjacency.set(v, new Set()); }`,
+            `    addEdge(from, to) { this.addVertex(from); this.addVertex(to); this.adjacency.get(from).add(to); }`,
+            `    bfs(start) { const visited = new Set(); const queue = [start]; const result = []; while (queue.length) { const node = queue.shift(); if (visited.has(node)) continue; visited.add(node); result.push(node); for (const neighbor of this.adjacency.get(node) || []) queue.push(neighbor); } return result; }`,
+            `    dfs(start) { const visited = new Set(); const result = []; const visit = (node) => { if (visited.has(node)) return; visited.add(node); result.push(node); for (const neighbor of this.adjacency.get(node) || []) visit(neighbor); }; visit(start); return result; }`,
+            `}`,
+            ``,
+            `const createPubSub = () => {`,
+            `    const topics = new Map();`,
+            `    return {`,
+            `        subscribe(topic, handler) { if (!topics.has(topic)) topics.set(topic, new Set()); topics.get(topic).add(handler); return () => topics.get(topic).delete(handler); },`,
+            `        publish(topic, data) { topics.get(topic)?.forEach(handler => handler(data)); },`,
+            `        clear(topic) { topics.delete(topic); }`,
+            `    };`,
+            `};`,
+            ``,
+            `function longestCommonSubsequence(a, b) {`,
+            `    const m = a.length, n = b.length;`,
+            `    const dp = Array.from({ length: m + 1 }, () => new Uint32Array(n + 1));`,
+            `    for (let i = 1; i <= m; i++) for (let j = 1; j <= n; j++) dp[i][j] = a[i - 1] === b[j - 1] ? dp[i - 1][j - 1] + 1 : Math.max(dp[i - 1][j], dp[i][j - 1]);`,
+            `    return dp[m][n];`,
+            `}`,
+            ``,
+            `class ObjectPool {`,
+            `    constructor(factory, reset, initialSize = 16) { this.factory = factory; this.reset = reset; this.pool = Array.from({ length: initialSize }, factory); }`,
+            `    acquire() { return this.pool.pop() || this.factory(); }`,
+            `    release(obj) { this.reset(obj); this.pool.push(obj); }`,
+            `}`,
+            ``,
+            `const createFrameScheduler = () => {`,
+            `    let tasks = []; let running = false;`,
+            `    const pump = (deadline) => {`,
+            `        while (tasks.length > 0 && (deadline.timeRemaining() > 0 || deadline.didTimeout)) { const task = tasks.shift(); task(); }`,
+            `        if (tasks.length > 0) requestIdleCallback(pump); else running = false;`,
+            `    };`,
+            `    return (task) => { tasks.push(task); if (!running) { running = true; requestIdleCallback(pump); } };`,
+            `};`,
+            ``,
+            `function createVirtualScroller({ container, itemCount, itemHeight, renderItem, overscan = 5 }) {`,
+            `    const viewport = document.createElement("div"); viewport.style.cssText = "height:100%;overflow:auto;position:relative";`,
+            `    const content = document.createElement("div"); content.style.height = itemCount * itemHeight + "px"; content.style.position = "relative";`,
+            `    viewport.appendChild(content); container.appendChild(viewport);`,
+            `    const render = () => {`,
+            `        const scrollTop = viewport.scrollTop; const height = viewport.clientHeight;`,
+            `        const start = Math.max(0, Math.floor(scrollTop / itemHeight) - overscan);`,
+            `        const end = Math.min(itemCount, Math.ceil((scrollTop + height) / itemHeight) + overscan);`,
+            `        content.innerHTML = "";`,
+            `        for (let i = start; i < end; i++) { const el = renderItem(i); el.style.cssText = \`position:absolute;top:\${i * itemHeight}px;height:\${itemHeight}px;left:0;right:0\`; content.appendChild(el); }`,
+            `    };`,
+            `    viewport.addEventListener("scroll", render, { passive: true }); render();`,
+            `    return { refresh: render, destroy: () => viewport.remove() };`,
+            `}`,
+            ``,
+            `const createSignal = (initialValue) => {`,
+            `    let value = initialValue; const subscribers = new Set();`,
+            `    return {`,
+            `        get: () => value,`,
+            `        set: (newValue) => { if (Object.is(value, newValue)) return; value = newValue; subscribers.forEach(fn => fn(value)); },`,
+            `        subscribe: (fn) => { subscribers.add(fn); fn(value); return () => subscribers.delete(fn); }`,
+            `    };`,
+            `};`,
+            ``,
+            `function createEffect(fn) {`,
+            `    let cleanup;`,
+            `    const run = () => { if (cleanup) cleanup(); cleanup = fn(); };`,
+            `    run();`,
+            `    return () => { if (cleanup) cleanup(); };`,
+            `}`,
+            ``,
+            `const createSelector = (dependencies, compute) => {`,
+            `    let lastDeps = null; let lastResult;`,
+            `    return () => {`,
+            `        const currentDeps = dependencies.map(d => d());`,
+            `        if (lastDeps && currentDeps.every((v, i) => Object.is(v, lastDeps[i]))) return lastResult;`,
+            `        lastDeps = currentDeps; lastResult = compute(...currentDeps); return lastResult;`,
+            `    };`,
+            `};`,
+            ``,
+            `class BitSet {`,
+            `    constructor(size) { this.bits = new Uint32Array(Math.ceil(size / 32)); this.size = size; }`,
+            `    set(index) { this.bits[index >>> 5] |= 1 << (index & 31); }`,
+            `    clear(index) { this.bits[index >>> 5] &= ~(1 << (index & 31)); }`,
+            `    has(index) { return !!(this.bits[index >>> 5] & (1 << (index & 31))); }`,
+            `    toggle(index) { this.bits[index >>> 5] ^= 1 << (index & 31); }`,
+            `}`,
+            ``,
+            `function createUUID() {`,
+            `    if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();`,
+            `    return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => { const r = Math.random() * 16 | 0; return (c === "x" ? r : (r & 0x3 | 0x8)).toString(16); });`,
+            `}`,
+            ``,
+            `const createNanoId = (size = 21) => {`,
+            `    const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-";`,
+            `    const bytes = crypto.getRandomValues(new Uint8Array(size));`,
+            `    let id = ""; for (let i = 0; i < size; i++) id += alphabet[bytes[i] & 63]; return id;`,
+            `};`,
+            ``,
+            `function createHashMap(hashFn = (s) => { let h = 0; for (let i = 0; i < s.length; i++) h = Math.imul(31, h) + s.charCodeAt(i) | 0; return h >>> 0; }) {`,
+            `    const buckets = new Map();`,
+            `    return {`,
+            `        set(key, value) { const h = hashFn(String(key)); if (!buckets.has(h)) buckets.set(h, new Map()); buckets.get(h).set(key, value); },`,
+            `        get(key) { return buckets.get(hashFn(String(key)))?.get(key); },`,
+            `        has(key) { return buckets.get(hashFn(String(key)))?.has(key) ?? false; },`,
+            `        delete(key) { const bucket = buckets.get(hashFn(String(key))); if (bucket) { bucket.delete(key); if (bucket.size === 0) buckets.delete(hashFn(String(key))); } }`,
+            `    };`,
+            `}`,
+            ``,
+            `class SparseSet {`,
+            `    constructor() { this.dense = []; this.sparse = new Map(); }`,
+            `    add(value) { if (this.sparse.has(value)) return false; this.sparse.set(value, this.dense.length); this.dense.push(value); return true; }`,
+            `    has(value) { return this.sparse.has(value); }`,
+            `    delete(value) { const idx = this.sparse.get(value); if (idx === undefined) return false; const last = this.dense.pop(); if (idx < this.dense.length) { this.dense[idx] = last; this.sparse.set(last, idx); } this.sparse.delete(value); return true; }`,
+            `    get size() { return this.dense.length; }`,
+            `}`,
+            ``,
+            `const createObjectPool = (factory, resetFn, size = 32) => {`,
+            `    const pool = Array.from({ length: size }, factory);`,
+            `    return { acquire: () => pool.length > 0 ? pool.pop() : factory(), release: (obj) => { resetFn(obj); pool.push(obj); } };`,
+            `};`,
+            ``,
+            `function createFixedTimestepLoop(update, render, timestep = 1 / 60) {`,
+            `    let accumulator = 0; let previousTime = performance.now(); let rafId;`,
+            `    const loop = (currentTime) => {`,
+            `        const delta = (currentTime - previousTime) / 1000; previousTime = currentTime; accumulator += delta;`,
+            `        while (accumulator >= timestep) { update(timestep); accumulator -= timestep; }`,
+            `        render(accumulator / timestep); rafId = requestAnimationFrame(loop);`,
+            `    };`,
+            `    rafId = requestAnimationFrame(loop);`,
+            `    return () => cancelAnimationFrame(rafId);`,
+            `}`,
+            ``,
+            `const clamp = (value, min, max) => value < min ? min : value > max ? max : value;`,
+            `const lerp = (a, b, t) => a + (b - a) * t;`,
+            `const inverseLerp = (a, b, value) => (value - a) / (b - a);`,
+            `const remap = (value, inMin, inMax, outMin, outMax) => lerp(outMin, outMax, inverseLerp(inMin, inMax, value));`,
+            ``,
+            `function createVec2(x = 0, y = 0) {`,
+            `    return {`,
+            `        x, y,`,
+            `        add(v) { return createVec2(this.x + v.x, this.y + v.y); },`,
+            `        sub(v) { return createVec2(this.x - v.x, this.y - v.y); },`,
+            `        scale(s) { return createVec2(this.x * s, this.y * s); },`,
+            `        length() { return Math.hypot(this.x, this.y); },`,
+            `        normalize() { const len = this.length() || 1; return createVec2(this.x / len, this.y / len); },`,
+            `        dot(v) { return this.x * v.x + this.y * v.y; }`,
+            `    };`,
+            `}`,
+            ``,
+            `const createNoise2D = (seed = 1337) => {`,
+            `    const permute = new Uint8Array(512); const p = new Uint8Array(256);`,
+            `    for (let i = 0; i < 256; i++) p[i] = i;`,
+            `    let s = seed; for (let i = 255; i > 0; i--) { s = (s * 16807 + 7) % 2147483647; const j = s % (i + 1); [p[i], p[j]] = [p[j], p[i]]; }`,
+            `    for (let i = 0; i < 512; i++) permute[i] = p[i & 255];`,
+            `    return (x, y) => {`,
+            `        const X = Math.floor(x) & 255, Y = Math.floor(y) & 255;`,
+            `        x -= Math.floor(x); y -= Math.floor(y);`,
+            `        const u = x * x * (3 - 2 * x), v = y * y * (3 - 2 * y);`,
+            `        const a = permute[X] + Y, b = permute[X + 1] + Y;`,
+            `        return lerp(lerp(permute[a], permute[b], u), lerp(permute[a + 1], permute[b + 1], u), v) / 255;`,
+            `    };`,
+            `};`,
+            ``,
+            `function createParticleEmitter(maxParticles = 2000) {`,
+            `    const particles = [];`,
+            `    return {`,
+            `        emit(x, y, count = 20, options = {}) {`,
+            `            const { speed = 2, life = 1, spreadVariance = 0.3 } = options;`,
+            `            for (let i = 0; i < count && particles.length < maxParticles; i++) {`,
+            `                const angle = Math.random() * Math.PI * 2; const vel = speed * (0.5 + Math.random());`,
+            `                particles.push({ x, y, vx: Math.cos(angle) * vel, vy: Math.sin(angle) * vel, life: life + (Math.random() - 0.5) * lifeVariance, maxLife: life });`,
+            `            }`,
+            `        },`,
+            `        update(dt) { for (let i = particles.length - 1; i >= 0; i--) { const p = particles[i]; p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt; if (p.life <= 0) particles.splice(i, 1); } },`,
+            `        get particles() { return particles; }`,
+            `    };`,
+            `}`,
+            ``,
+            `const createTween = (from, to, duration, easing = (t) => t) => {`,
+            `    let startTime = null;`,
+            `    return {`,
+            `        update(now) { if (startTime === null) startTime = now; const t = clamp((now - startTime) / duration, 0, 1); return lerp(from, to, easing(t)); },`,
+            `        get finished() { return startTime !== null && performance.now() - startTime >= duration; }`,
+            `    };`,
+            `};`,
+            ``,
+            `function createAnimationController(target) {`,
+            `    const activeTweens = [];`,
+            `    return {`,
+            `        to(props, duration, easing) { Object.entries(props).forEach(([key, value]) => activeTweens.push({ key, tween: createTween(target[key], value, duration, easing) })); },`,
+            `        update(now) { for (let i = activeTweens.length - 1; i >= 0; i--) { const { key, tween } = activeTweens[i]; target[key] = tween.update(now); if (tween.finished) activeTweens.splice(i, 1); } },`,
+            `        get isAnimating() { return activeTweens.length > 0; }`,
+            `    };`,
+            `}`,
+            ``,
+            `// ======================== SYSTEM READY ========================`,
+            `console.log("%c[KERNEL] All core subsystems initialized successfully — ready for production traffic", "color:#4ade80;font-weight:bold;font-size:13px");`,
+            `console.log("%c[KERNEL] Memory footprint optimized | GC pressure minimized | Event loop latency < 1ms", "color:#c084fc");`,
+            `export default Object.freeze({ version: "5.1.0-production", buildId: createNanoId(12), bootTimestamp: Date.now() });`
+        ];
+
+        // Đảm bảo đúng 200 dòng
+        let finalLines = rawLines.slice(0, 200);
+        while (finalLines.length < 200) finalLines.push("");
+
+        const board = document.getElementById("codeBoard");
+        finalLines.forEach((line, index) => {
+            const div = document.createElement("div");
+            div.className = "code-line";
+            const num = String(index + 1).padStart(3, " ");
+            div.innerHTML = `<span class="line-num">${num}</span>${colorize(line || " ")}`;
+            board.appendChild(div);
+        });
+    </script>
+</body>
+</html>
